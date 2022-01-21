@@ -4,7 +4,7 @@ const zlib = require("zlib")
 const tar = require("tar")
 const fs = require("fs-extra")
 import Paths from "./paths"
-import { Summoner, Platform, MatchInfo, MatchDetails, AccountId, MatchDetailsBySeason, MatchDetailsMap } from "./types"
+import { Summoner, Platform, MatchId, AccountId, Puuid, MatchDetailsMap, MatchDetails, Region } from "./types"
 
 enum Endpoint {
     Summoner = "summoner",
@@ -17,10 +17,10 @@ interface PathParams {
         summonerName: string
     },
     [Endpoint.MatchHistory]: {
-        encryptedAccountId: string
+        puuid: Puuid
     },
     [Endpoint.MatchDetails]: {
-        matchId: number
+        matchId: string
     }
 }
 
@@ -28,10 +28,10 @@ interface QueryParams {
     [Endpoint.Summoner]: {
     },
     [Endpoint.MatchHistory]: {
-        beginTime?: number,
+        start?: number,
+        count?: number
+        startTime?: number,
         endTime?: number,
-        beginIndex?: number,
-        endIndex?: number
     },
     [Endpoint.MatchDetails]: {
     }
@@ -39,14 +39,14 @@ interface QueryParams {
 
 interface ApiResponse {
     [Endpoint.Summoner]: Summoner
-    [Endpoint.MatchHistory]: { matches: MatchInfo[] }
+    [Endpoint.MatchHistory]: MatchId[]
     [Endpoint.MatchDetails]: MatchDetails
 }
 
 const endpoints = {
     [Endpoint.Summoner]: "/lol/summoner/v4/summoners/by-name/{summonerName}",
-    [Endpoint.MatchHistory]: "/lol/match/v4/matchlists/by-account/{encryptedAccountId}",
-    [Endpoint.MatchDetails]: "/lol/match/v4/matches/{matchId}"
+    [Endpoint.MatchHistory]: "/lol/match/v5/matches/by-puuid/{puuid}/ids",
+    [Endpoint.MatchDetails]: "/lol/match/v5/matches/{matchId}"
 }
 
 /**
@@ -59,19 +59,22 @@ function sleep(time: number) {
 interface DownloadOptions {
     paths: Paths
     apiKey: string
+    region: Region
     platform: Platform
     requestInterval?: number
 }
 
 export default class API {
     private requestInterval
+    private region
     private platform
     private paths
     private apiKey
     
-    constructor({ requestInterval=1500, paths, platform, apiKey }: DownloadOptions) {
+    constructor({ requestInterval=1500, paths, region, platform, apiKey }: DownloadOptions) {
         // Personal API key: at most 20 requests per second, 100 requests per 2 minutes
         this.requestInterval = requestInterval
+        this.region = region
         this.platform = platform
         this.paths = paths
         this.apiKey = apiKey
@@ -146,9 +149,10 @@ export default class API {
             filledUrl = filledUrl.replace("{" + paramName + "}", paramValue as any)
         }
         let response;
+        const routingValue = endpoint === Endpoint.Summoner ? this.platform : this.region
         try {
             response = await axios.get(filledUrl, {
-                baseURL: `https://${this.platform.toLowerCase()}.api.riotgames.com`,
+                baseURL: `https://${routingValue.toLowerCase()}.api.riotgames.com`,
                 responseType: "json",
                 headers: {
                     "Accept-Charset": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -172,19 +176,14 @@ export default class API {
      *  the server returns an empty list.
      *  Note that this function does not request any match details.
      */
-    private async downloadAllMatches(accountId: AccountId, batchSize=100): Promise<MatchInfo[]> {
-        const dataPath = this.paths.matchList(this.platform, accountId)
-        let matches: MatchInfo[];
-        if (fs.existsSync(dataPath)) {
-            matches = JSON.parse(fs.readFileSync(dataPath, { encoding: "utf-8" }))
-        } else {
-            matches = []
-        }
+    private async downloadAllMatches(accountId: AccountId, puuid: Puuid, batchSize=100): Promise<MatchId[]> {
+        const dataPath = this.paths.matchList(this.region, accountId)
+        let matchIds: MatchId[] = [];
 
         // Make sure that retrieved matches get saved if program is interrupted
         const saveData = () => {
-            fs.writeFileSync(dataPath, JSON.stringify(matches, null, 4))
-            console.log(`Wrote ${matches.length} matches to disk.`)
+            fs.writeFileSync(dataPath, JSON.stringify(matchIds, null, 4))
+            console.log(`Wrote ${matchIds.length} matches to disk.`)
         }
         const onProgramInterrupt = () => {
             saveData()
@@ -192,20 +191,20 @@ export default class API {
         }
         process.on("SIGINT", onProgramInterrupt)
 
-        let beginIndex = matches.length;
+        let beginIndex = matchIds.length;
         while (true) {
             try {
                 const data = await this.sendRequest(Endpoint.MatchHistory, {
-                    encryptedAccountId: accountId
+                    puuid: puuid
                 }, {
-                    beginIndex: beginIndex,
-                    endIndex: beginIndex + batchSize
+                    start: beginIndex,
+                    count: batchSize
                 });
-                console.log(`Received ${data.matches.length} more match entries.`)
-                if (data.matches.length === 0) break;
-                matches.push(...data.matches)
+                console.log(`Downloaded ${data.length}  match entries.`)
+                if (data.length === 0) break;
+                matchIds.push(...data)
             } catch (error) {
-                console.error("ERROR:", error.response.data.status.message)
+                console.error("ERROR:", (error as any).response.data.status.message)
                 break
             }
             await sleep(this.requestInterval)
@@ -213,8 +212,8 @@ export default class API {
         }
         saveData()
         process.removeListener("SIGINT", onProgramInterrupt)
-        console.log(`Match history contains ${matches.length} matches in total.`)
-        return matches
+        console.log(`Match history contains ${matchIds.length} matches in total.`)
+        return matchIds
     }
 
     public async getSummonerInfoByName(name: string): Promise<Summoner> {
@@ -230,27 +229,18 @@ export default class API {
      *  In short intervals, the function will periodically request batches
      *  of games played within 5 days, until the current time.
      */
-    public async downloadMatches(accountId: AccountId, beginTime?: number): Promise<MatchInfo[]> {
-        const dataPath = this.paths.matchList(this.platform, accountId)
-        let matches: MatchInfo[]
-        if (fs.existsSync(dataPath)) {
-            matches = JSON.parse(fs.readFileSync(dataPath, { encoding: "utf-8" }))
-            beginTime = matches[0].timestamp + 1
-        } else {
-            if (beginTime === undefined) {
-                return this.downloadAllMatches(accountId)
-            } else {
-                matches = []
-            }
-        }
-        let newMatches: MatchInfo[] = []
+    public async downloadMatches(matchIds: MatchId[], accountId: AccountId, puuid: Puuid, beginTime?: number): Promise<MatchId[]> {
+        if (beginTime === undefined)
+            return this.downloadAllMatches(accountId, puuid)
+        let newMatches: MatchId[] = []
 
         // Make sure that retrieved matches get saved if program is interrupted
+        const dataPath = this.paths.matchList(this.region, accountId)
         const saveData = () => {
-            matches = [...newMatches, ...matches]
+            matchIds = [...newMatches, ...matchIds]
             if (newMatches.length > 0) {
-                fs.writeFileSync(dataPath, JSON.stringify(matches, null, 4))
-                console.log(`Added ${newMatches.length} new matches to local history.`)
+                fs.writeFileSync(dataPath, JSON.stringify(matchIds, null, 4))
+                // console.log(`Added ${newMatches.length} new matches to local history.`)
             }
         }
         const onProgramInterrupt = () => {
@@ -259,24 +249,26 @@ export default class API {
         }
         process.on("SIGINT", onProgramInterrupt)
 
-        const batchInterval = 1000 * 60 * 60 * 24 * 5;  // 5 days in milliseconds
+        const batchInterval =  60 * 60 * 24 * 5;  // 5 days in seconds
         const currentDate = new Date();
-        const currentTime = currentDate.getTime()
+        const currentTime = Math.floor(currentDate.getTime() / 1000)
         while (beginTime < currentTime) {
             try {
                 const data = await this.sendRequest(Endpoint.MatchHistory, {
-                    encryptedAccountId: accountId
+                    puuid
                 }, {
-                    beginTime: beginTime,
+                    startTime: beginTime,
                     endTime: beginTime + batchInterval
                 });
-                console.log(`Received ${data.matches.length} more match entries.`)
-                newMatches = [...data.matches, ...newMatches]
+                if (data.length > 0) {
+                    console.log(`Downloaded ${data.length} more match entries.`)
+                }
+                newMatches = [...data, ...newMatches]
             } catch (error) {
                 // If no matches are found in this period, server will return 404
                 // (in this case just continue, otherwise print error and abort)
-                if (error.response.data.status.status_code !== 404) {
-                    console.error("ERROR:", error.response.data.status.message)
+                if ((error as any).response.data.status.status_code !== 404) {
+                    console.error("ERROR:", (error as any).response.data.status.message)
                     break;
                 }
             }
@@ -285,8 +277,8 @@ export default class API {
         }
         saveData()
         process.removeListener("SIGINT", onProgramInterrupt)
-        console.log(`Match history contains ${matches.length} matches in total.`)
-        return matches
+        console.log(`Match history contains ${matchIds.length} matches.`)
+        return matchIds
     }
 
     /**
@@ -294,18 +286,17 @@ export default class API {
      *  and request details for each match in short intervals, up until the given
      *  limit (if given).
      */
-    public async downloadMatchDetails(accountId: AccountId, matchList: MatchInfo[]): Promise<MatchDetailsMap> {
-        const matches = [...matchList].reverse()  // Get old details first before they get deleted
-        const matchDetailsPerSeason: MatchDetailsBySeason = {};
+    public async downloadMatchDetails(
+        accountId: AccountId,
+        matchIds: MatchId[],
+        matchDetailsMap: MatchDetailsMap
+    ): Promise<MatchDetailsMap> {
+        matchIds = [...matchIds].reverse()  // Get old details first before they get deleted
         let counter = 0;
 
         const saveData = () => {
-            for (const seasonId in matchDetailsPerSeason) {
-                const matchDetails = matchDetailsPerSeason[seasonId]
-                const outputPath = this.paths.matchDetails(
-                    this.platform, accountId, parseInt(seasonId))
-                fs.writeFileSync(outputPath, JSON.stringify(matchDetails))
-            }
+            const outputPath = this.paths.matchDetails(this.region, accountId)
+            fs.writeFileSync(outputPath, JSON.stringify(matchDetailsMap))
             if (counter > 0) {
                 console.log(`Added ${counter} new match details.             `)
             }
@@ -317,41 +308,28 @@ export default class API {
             process.exit()
         }
         process.on("SIGINT", onProgramInterrupt)
+        const numMissingMatches = matchIds.filter(id => !(id in matchDetailsMap)).length
+        if (numMissingMatches === 0) return matchDetailsMap
 
-        for (const matchInfo of matches) {
-            const seasonId = matchInfo.season
-
-            // Get existing match details for this season (if any exist)
-            if (!matchDetailsPerSeason.hasOwnProperty(seasonId)) {
-                const filePath = this.paths.matchDetails(
-                    this.platform, accountId, seasonId)
-                if (fs.existsSync(filePath)) {
-                    const existingData = JSON.parse(
-                        fs.readFileSync(filePath, { encoding: "utf-8" }))
-                    matchDetailsPerSeason[seasonId] = existingData
-                } else {
-                    matchDetailsPerSeason[seasonId] = {}
-                }
-            }
-            const matchId = matchInfo.gameId;
-            if (matchId in matchDetailsPerSeason[seasonId]) continue
+        for (const matchId of matchIds) {
+            if (matchId in matchDetailsMap) continue
             try {
                 const matchDetails = await this.sendRequest(Endpoint.MatchDetails, { matchId })
-                matchDetailsPerSeason[seasonId][matchId] = matchDetails;
+                matchDetailsMap[matchId] = matchDetails
                 ++counter;
-                process.stdout.write(`Retrieved details for ${counter} matches...    \r`)
+                process.stdout.write(`Downloaded data for ${counter} / ${numMissingMatches} matches...    \r`)
             } catch (error) {
-                console.error("ERROR:", error.response.data.status.message,
+                console.error("ERROR:", (error as any).response.data.status.message,
                     "                   ")  // Padding to overwrite previous text
                 break;
             }
             await sleep(this.requestInterval)
         }
-        console.log(`Retrieved details for ${counter} matches.         \n`)
+        console.log(`Downloaded data for ${counter} / ${numMissingMatches} matches.         `)
 
         saveData()
         process.removeListener("SIGINT", onProgramInterrupt)
-        return Object.assign({}, ...Object.values(matchDetailsPerSeason))
+        return matchDetailsMap
     }
 }
 

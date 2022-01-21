@@ -1,5 +1,4 @@
-import { AccountId, Platform, SeasonId } from "types"
-import { runInThisContext } from "vm"
+import { AccountId, Platform, Region, SeasonId } from "types"
 
 const path = require("path")
 
@@ -13,15 +12,21 @@ export default class Paths {
     private readonly summonerDataBase: string
     private readonly resources: string 
 
-    // Summoner Data
-    public readonly summonerData: (platform: Platform, accountId: AccountId) => string
-    public readonly matchList: (platform: Platform, accountId: AccountId) => string
-    public readonly matchDetails: (platform: Platform, accountId: AccountId, seasonId: SeasonId) => string
+    // Match data (match v5)
+    public readonly summonerData: (region: Region, accountId: AccountId) => string
+    public readonly matchList: (region: Region, accountId: AccountId) => string
+    public readonly matchDetails: (region: Region, accountId: AccountId) => string
+
+    // Old match data (match v4)
+    public readonly oldSummonerData: (platform: Platform, accountId: AccountId) => string
+    public readonly oldMatchList: (platform: Platform, accountId: AccountId) => string
+    public readonly oldMatchDetails: (platform: Platform, accountId: AccountId, seasonId: SeasonId) => string
 
     // Resources
     public readonly dragon: string
     public readonly seasons: string
     public readonly champions: string
+    public readonly runes: string
     public readonly dragonManifest: string
     public readonly tempDownloads: string
 
@@ -29,13 +34,19 @@ export default class Paths {
         this.summonerDataBase = props.summonerDataPath
         this.resources = props.resourcesPath
 
-        this.summonerData = (platform: Platform, accountId: AccountId) => {
-            return path.join(this.summonerDataBase, platform, accountId)
-        }
-        this.matchList = (platform, accountId) =>
-            path.join(this.summonerData(platform, accountId), "matches.json")
-        this.matchDetails = (platform, accountId, seasonId) =>
-            path.join(this.summonerData(platform, accountId),
+        this.summonerData = (region, accountId) =>
+            path.join(this.summonerDataBase, region, accountId)
+        this.matchList = (region, accountId) =>
+            path.join(this.summonerData(region, accountId), "matches.json")
+        this.matchDetails = (region, accountId) =>
+            path.join(this.summonerData(region, accountId), `match-details.json`)
+
+        this.oldSummonerData = (platform, accountId) =>
+            path.join(this.summonerDataBase, platform, accountId)
+        this.oldMatchList = (platform, accountId) =>
+            path.join(this.oldSummonerData(platform, accountId), "old-matches.json")
+        this.oldMatchDetails = (platform, accountId, seasonId) =>
+            path.join(this.oldSummonerData(platform, accountId),
                 `match-details-${seasonId}.json`)
 
         this.seasons = path.join(this.resources, "seasons.json")
@@ -43,6 +54,7 @@ export default class Paths {
         this.dragonManifest = path.join(this.dragon, "manifest.json")
         const dragonData = path.join(this.dragon, "data", "en_US")
         this.champions = path.join(dragonData, "champion.json")
+        this.runes = path.join(dragonData, "runesReforged.json")
         this.tempDownloads = path.join(this.resources, "downloads")
     }
 }

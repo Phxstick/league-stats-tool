@@ -1,7 +1,9 @@
 
+export type Puuid = string
 export type AccountId = string
 export type SeasonId = number
-export type MatchId = number
+export type MatchId = string
+export type GameId = number
 export type QueueId = number
 export type ChampionId = number
 export type ItemId = number
@@ -20,14 +22,21 @@ export enum Platform {
     RU = "RU"
 }
 
+export enum Region {
+    EUROPE = "EUROPE",
+    AMERICAS = "AMERICAS",
+    ASIA = "ASIA"
+}
+
 export enum Queue {
     CrystalScar = "Crystal Scar",
     TwistedTreeline = "Twisted Treeline",
     HowlingAbyss = "Howling Abyss",
     NexusBlitz = "Nexus Blitz",
-    SummonersRift = "Summoners Rift",
+    SummonersRift = "Summoner's Rift",
     OneForAll = "One For All",
-    UltraRapidFire = "Ultra Rapid Fire"
+    UltraRapidFire = "Ultra Rapid Fire",
+    UltimateSpellbook = "Ultimate Spellbook",
 }
 
 export enum Role {
@@ -48,33 +57,40 @@ export interface Summoner {
     name: string
     id: string
     accountId: AccountId
+    puuid: Puuid
     summonerLevel: number
 }
 
 export interface SummonerInfo {
     platform: Platform
+    region: Region
     accountId?: AccountId
+    puuid: Puuid
     id?: string
     name?: string
 }
 
-export interface MatchInfo {
-    platformId: Platform
-    gameId: MatchId
-    champion: ChampionId
-    queue: QueueId
-    season: SeasonId
-    timestamp: number
-    role: Role
-    lane: Lane
-}
-
 interface TeamInfo {
     teamId: number
-    win: "Win" | "Fail"
+    bans: { championId: ChampionId }[]
+    // Boolean in v5, "Win" | "Fail" in v4
+    win: boolean | string
 }
 
-interface ParticipantStats {
+interface Perk {
+    perk: number
+    var1: number
+    var2: number
+    var3: number
+}
+
+interface PlayerStyles {
+    description: "primaryStyle" | "subStyle"
+    selections: Perk[]
+    style: number
+}
+
+export interface ParticipantStats {
     win: boolean
     item0: ItemId
     item1: ItemId
@@ -109,17 +125,84 @@ interface ParticipantStats {
     goldEarned: number
     totalMinionsKilled: number
     champLevel: number
-}
 
-export interface Participant {
+    // Rune stats
+    perks: {
+        statPerks: {
+            defense: number
+            flex: number
+            offense: number
+        }
+        styles: PlayerStyles[]
+    }
+
+    // New in v5
+    puuid: Puuid
+    // ChampionId might be invalid prior to patch 11.4, use championName field instead
+    championName: string
+
+    // All of the following fields were previously directly on Participant object
     participantId: number,
     teamId: number,
-    championId: ChampionId,
-    spell1Id: number,
-    spell2Id: number,
-    stats: ParticipantStats
+    championId: ChampionId
 }
 
+export interface Participant extends ParticipantStats {
+    // Stats in v5 are are now part of this object, keep this for backward compatibility
+    stats?: ParticipantStats
+}
+
+export interface MatchInfo {
+    gameId: GameId
+    gameCreation: number
+    gameDuration: number
+    gameEndTimestamp: number
+    queueId: QueueId
+    teams: [TeamInfo, TeamInfo]
+    participants: Participant[]
+
+    // No longer used in version 5 of the match API
+    participantIdentities?: ParticipantIdentity[]
+    seasonId: SeasonId
+}
+
+export interface MatchDetails {
+    metadata: {
+        dataVersion: string
+        matchId: MatchId
+        participants: Puuid[]
+    }
+    info: MatchInfo
+}
+
+export type MatchDetailsMap = {
+    [key in MatchId]: MatchDetails
+}
+
+export enum MatchProperty {
+    CHAMPION = "champion",
+    SEASON = "season",
+    QUEUE = "queue"
+}
+
+export type MatchInfoMap = {
+    [key in GameId]: MatchInfo
+}
+
+// The following is no longer used in the new V5 version of Riot's match API,
+// now a match is just an ID (not the game ID, but a new match ID)
+export interface OldMatchInfo {
+    platformId: Platform
+    gameId: GameId
+    champion: ChampionId
+    queue: QueueId
+    season: SeasonId
+    timestamp: number
+    role: Role
+    lane: Lane
+}
+
+// No longer used in version 5 of the match API
 interface ParticipantIdentity {
     participantId: number,
     player: {
@@ -129,27 +212,25 @@ interface ParticipantIdentity {
     }
 }
 
-export interface MatchDetails {
-    gameId: MatchId
-    gameCreation: number
-    gameDuration: number
-    queueId: QueueId
-    seasonId: SeasonId
-    teams: [TeamInfo, TeamInfo]
-    participants: Participant[]
-    participantIdentities: ParticipantIdentity[]
+type RuneStyleKey = "Precision" | "Domination" | "Sorcery" | "Resolve" | "Inspiration"
+
+interface Rune {
+    id: number
+    key: string
+    name: string
+    shortDesc: string
+    longDesc: string
 }
 
-export type MatchDetailsMap = {
-    [key in MatchId]: MatchDetails
+interface RuneSlot {
+    runes: Rune[]
 }
 
-export type MatchDetailsBySeason = {
-    [key in SeasonId]: MatchDetailsMap
+interface RuneStyle {
+    id: number
+    key: RuneStyleKey
+    name: RuneStyleKey
+    slots: RuneSlot[]
 }
 
-export enum MatchProperty {
-    CHAMPION = "champion",
-    SEASON = "season",
-    QUEUE = "queue"
-}
+export type Runes = RuneStyle[]

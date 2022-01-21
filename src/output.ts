@@ -1,7 +1,9 @@
 const fs = require("fs")
+const asciichart = require("asciichart")
 import Paths from "./paths";
 import { ChampionId, MatchProperty, Platform, SeasonId } from "./types";
 import { Statistics, StatValue, StatValues } from "./stats";
+import { stat } from "fs-extra";
 
 const platformNames = {
     [Platform.BR1]: "Brazil",
@@ -70,6 +72,10 @@ function chooseColor(winRate: number) {
     // return undefined
 }
 
+function applyColor(color: number, text: string): string {
+    return `\u001b[38;5;${color}m${text}\u001b[0m`
+}
+
 type ChampionInfos = {
     [key in ChampionId]: {
         name: string
@@ -109,24 +115,45 @@ export default class Output {
         }
     }
 
-    private convertValue(value: string | number, type: MatchProperty): string {
+    private convertValue(value: string, type: MatchProperty): string {
         if (type === MatchProperty.CHAMPION) {
-            return this.championInfos[value as ChampionId].name
+            return this.championInfos[parseInt(value) as ChampionId].name
         } else if (type === MatchProperty.QUEUE) {
             return value as string
         } else if (type === MatchProperty.SEASON) {
-            return this.seasonNames[value as SeasonId]
+            // Hard coded special case since preseason 11 is counted as part of season 10
+            return value === "13.5" ? "PRESEASON 2020" : this.seasonNames[parseInt(value) as SeasonId]
         } else {
             throw Error(`Unknown match property '${type}'`)
         }
     }
 
+    private formatStatValue(key: StatValue, value: number): string {
+        if (key === StatValue.WIN_RATIO) {
+            const winPercentage = value * 100
+            let winPercString = winPercentage.toFixed(2)
+            const colorCode = chooseColor(value)
+            if (colorCode !== undefined) 
+                winPercString = applyColor(colorCode, winPercString)
+            return winPercString + "% won"
+        }
+        if (!Number.isInteger(value)) {
+            const percentage = (value * 100).toFixed(2)
+            return `${key}: ${percentage}%`
+        }
+        return `${key}: ${value}`
+        // if (value > 1000) {
+        //     return Math.round(value / 1000).toString() + "k"
+        // }
+        return value.toString()
+    }
+
     public printStats(
             stats: Statistics,
             groupKeys: MatchProperty[],
+            statKeys: StatValue[]=[StatValue.WIN_RATIO],
             sortBy: StatValue[]=[StatValue.NUM_GAMES],
             recursionLevel=1) {
-        const orderedKeys = Object.keys(stats)
         const propertyKey = groupKeys[0]
         const remainingGroupKeys = groupKeys.slice(1)
         if (remainingGroupKeys.length > 0) {
@@ -136,7 +163,7 @@ export default class Output {
                 console.log()
                 console.log(propertyValue)
                 console.log("-".repeat(propertyValue.length))
-                this.printStats(subStats, remainingGroupKeys, sortBy, recursionLevel + 1) 
+                this.printStats(subStats, remainingGroupKeys, statKeys, sortBy, recursionLevel + 1) 
             }
         } else {
             const statValueMap = stats as { [key in string | number]: StatValues }
@@ -153,13 +180,20 @@ export default class Output {
                 const statValues = statValueMap[propertyValue]
                 const numGames = statValues[StatValue.NUM_GAMES]
                 if (numGames < this.minNumGames) continue
-                const colorCode = chooseColor(statValues[StatValue.WIN_RATIO])
-                const winPercentage = statValues[StatValue.WIN_RATIO] * 100
-                const winRateString = colorCode === undefined ?
-                    winPercentage.toFixed(2) :
-                    `\u001b[38;5;${colorCode}m${winPercentage.toFixed(2)}\u001b[0m`
-                console.log(`  ${valueString} (${numGames} games): ${winRateString} won`)
+                const statStrings: string[] = []
+                for (const statKey of statKeys) {
+                    if (statValues[statKey] === undefined) continue
+                    statStrings.push(this.formatStatValue(statKey, statValues[statKey]))
+                }
+                console.log(`  ${valueString} (${numGames} games): ` + statStrings.join(", "))
             }
         }
+    }
+
+    plotChart(values: number[]) {
+        const chart = asciichart.plot(values)
+        const chartWidth = chart.indexOf("\n")
+        console.log(chart)
+        console.log("-".repeat(chartWidth + 5))
     }
 }
